@@ -14,9 +14,13 @@ import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import com.tns.bindings.ProxyGenerator;
 import com.tns.multidex.MultiDex;
+
+import dalvik.system.DexClassLoader;
 
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
@@ -91,10 +95,12 @@ public class DexFactory
 			long startMultiDexTime = System.nanoTime();
 			List<File> files = new ArrayList<File>();
 			files.add(proxyFile);
+			boolean success = false;
 			try
 			{
 				MultiDex.installSecondaryDexes(context.getClassLoader(), odexDir, files);
 				injectedProxyClasses.add(fullClassName);
+				success = true;
 			}
 			catch (IllegalArgumentException e)
 			{
@@ -123,6 +129,27 @@ public class DexFactory
 				Log.d(Platform.DEFAULT_LOG_TAG, "Finished injecting into multidex: " + proxyFile.getAbsolutePath() + " took: " + (stopMultiDexTime - startMultiDexTime) / 1000000.0 + "ms");
 				Log.d(Platform.DEFAULT_LOG_TAG, "TotalMultiDexTime: " + totalMultiDexTime / 1000000.0 + "ms");
 			}
+			//
+			if (!success)
+			{
+				String s = NativeScriptApplication.getInstance().getFilesDir().getParent() + "/code_cache";
+				String dexFile = proxyFile.getAbsolutePath();
+				
+				ZipOutputStream out = new ZipOutputStream(new FileOutputStream(dexFile + ".jar"));
+			    out.putNextEntry(new ZipEntry("classes.dex"));
+			    byte[] dexData = new byte[(int)proxyFile.length()];
+			    FileInputStream fi = new FileInputStream(proxyFile);
+			    fi.read(dexData, 0, dexData.length);
+			    fi.close();
+			    out.write(dexData);
+			    out.closeEntry();
+			    out.close();				
+				
+				DexClassLoader dexClassLoader = new DexClassLoader(dexFile + ".jar", s, null, ClassLoader.getSystemClassLoader());
+				Class<?> d = dexClassLoader.loadClass(fullClassName);
+				return d;
+			}
+			//
 
 
 			long startLoadDexTime = System.nanoTime();
