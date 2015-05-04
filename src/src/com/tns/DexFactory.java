@@ -49,7 +49,7 @@ public class DexFactory
 
 		ApplicationInfo applicationInfo = context.getApplicationInfo();
 		dexPath = applicationInfo.dataDir + File.separator + SECONDARY_DEX_FOLDER_NAME + File.separator;
-		odexPath = applicationInfo.dataDir + File.separator + SECONDARY_DEX_FOLDER_NAME + File.separator + "odex";
+		odexPath = applicationInfo.dataDir + File.separator + SECONDARY_DEX_FOLDER_NAME + File.separator + "odex" + File.separator;
 		proxyGenerator = new ProxyGenerator(dexPath);
 		ProxyGenerator.IsLogEnabled = Platform.IsLogEnabled;
 		File dexDir = new File(dexPath);
