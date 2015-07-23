@@ -14,7 +14,7 @@ module.exports = function(grunt) {
 		wait: {
 			timeToRunTests: {
 				options: {
-					delay: 180000
+					delay: 300000
 				}
 			}
 		},
@@ -37,6 +37,9 @@ module.exports = function(grunt) {
             }
         },
         exec: {
+			deletePreviousResultXml: {
+				cmd: "adb shell rm /sdcard/android_unit_test_results.xml"
+			},
 			createBuildXml: {
 				cmd: "android update project --path ."
 			},
@@ -50,6 +53,10 @@ module.exports = function(grunt) {
 			startInstalledApk: {
 				cmd: "adb shell am start -n com.tns.android_runtime_testapp/com.tns.NativeScriptActivity -a android.intent.action.MAIN -c android.intent.category.LAUNCHER",
 				cwd: "./bin"
+			},
+			waitForUnitTestResultFile: {
+				cmd: "node ./try_to_find_test_result_file.js",
+				cwd: "."
 			},
 			copyResultToDist: {
 				cmd: "adb pull /sdcard/android_unit_test_results.xml",
@@ -90,8 +97,10 @@ module.exports = function(grunt) {
 							"exec:runAntRelease", 
 							
                             "exec:installApkOnDevice",
+							"exec:deletePreviousResultXml",
                             "exec:startInstalledApk",
-							"wait:timeToRunTests",
+							// "wait:timeToRunTests",
+							"exec:waitForUnitTestResultFile",
 							"exec:copyResultToDist"
                         ]);
 
