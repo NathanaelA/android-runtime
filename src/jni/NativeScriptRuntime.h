@@ -68,6 +68,8 @@ namespace tns
 
 		static void APP_FAIL(const char *message);
 
+		static void RequireClearCacheCallback(const v8::FunctionCallbackInfo<v8::Value> &args);
+
 		static void RequireCallback(const v8::FunctionCallbackInfo<v8::Value>& args);
 
 		static void CreateGlobalCastFunctions(const v8::Handle<v8::ObjectTemplate>& globalTemplate);
