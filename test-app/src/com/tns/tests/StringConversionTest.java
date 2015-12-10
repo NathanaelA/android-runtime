@@ -6,8 +6,6 @@ import android.content.Context;
 import android.content.res.AssetFileDescriptor;
 import android.content.res.AssetManager;
 
-import com.tns.Platform;
-
 public class StringConversionTest
 {
 	public final String s;
@@ -86,7 +84,7 @@ public class StringConversionTest
 	{
 		String str = null;
 		
-		Context context = Platform.getApplicationContext();
+		Context context = com.tns.NativeScriptApplication.getInstance();
 		
 		InputStream inputStream = null;
 		try

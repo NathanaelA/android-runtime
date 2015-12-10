@@ -7,14 +7,6 @@ using namespace v8;
 using namespace std;
 using namespace tns;
 
-string Util::ToJniName(const string& signature)
-{
-	string jniSignature = signature;
-	std::replace(jniSignature.begin(), jniSignature.end(), '.', '/');
-	return jniSignature;
-}
-
-
 string Util::JniClassPathToCanonicalName(const string& jniClassPath)
 {
 	std::string canonicalName;
@@ -94,6 +86,16 @@ void Util::SplitString(const string& str, const string& delimiters, vector<strin
 	}
 }
 
+bool Util::EndsWith(const string& str, const string& suffix)
+{
+	bool res = false;
+    if (str.size() > suffix.size())
+    {
+    	res = equal(suffix.rbegin(), suffix.rend(), str.rbegin());
+    }
+    return res;
+}
+
 string Util::ConvertFromJniToCanonicalName(const std::string& name)
 {
 	string converted = name;
@@ -106,40 +108,4 @@ string Util::ConvertFromCanonicalToJniName(const std::string& name)
 	string converted = name;
 	replace(converted.begin(), converted.end(), '.', '/');
 	return converted;
-}
-
-bool Util::StartsWith(const string& s, const string& prefix)
-{
-	size_t prefixLength = prefix.length();
-	return (prefixLength < s.length()) && (s.compare(0, prefixLength, prefix) == 0);
-}
-
-string Util::GetStackTrace(int frameCount)
-{
-	stringstream ss;
-	auto stackTrace = StackTrace::CurrentStackTrace(Isolate::GetCurrent(), frameCount, StackTrace::kOverview);
-	if (!stackTrace.IsEmpty())
-	{
-		auto count = stackTrace->GetFrameCount();
-		for (int i=0; i<count; i++)
-		{
-			auto frame = stackTrace->GetFrame(i);
-			if (!frame.IsEmpty())
-			{
-				auto scriptName = frame->GetScriptName();
-				auto fileName = ConvertToString(scriptName);
-				ss << fileName;
-
-				int lineNumber = frame->GetLineNumber();
-				if (lineNumber > Constants::MODULE_LINES_OFFSET)
-				{
-					lineNumber -= Constants::MODULE_LINES_OFFSET;
-				}
-				int column = frame->GetColumn();
-				ss << ":" << lineNumber << ":" << column << "\n";
-			}
-		}
-	}
-
-	return ss.str();
 }

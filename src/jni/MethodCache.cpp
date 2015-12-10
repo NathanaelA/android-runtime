@@ -1,7 +1,6 @@
 #include "MethodCache.h"
 #include "JniLocalRef.h"
 #include "JsArgToArrayConverter.h"
-#include "ExceptionUtil.h"
 #include "MetadataNode.h"
 #include "NativeScriptAssert.h"
 #include "Util.h"
@@ -47,6 +46,8 @@ MethodCache::CacheMethodInfo MethodCache::ResolveMethodSignature(const string& c
 			assert(clazz != nullptr);
 			mi.clazz = clazz;
 			mi.signature = signature;
+			mi.returnType = MetadataReader::ParseReturnType(mi.signature);
+			mi.retType = MetadataReader::GetReturnType(mi.returnType);
 			mi.isStatic = isStatic;
 			mi.mid = isStatic
 						? env.GetStaticMethodID(clazz, methodName, signature)
@@ -93,7 +94,7 @@ string MethodCache::EncodeSignature(const string& className, const string& metho
 }
 
 
-string MethodCache::GetType(const v8::Handle<v8::Value>& value)
+string MethodCache::GetType(const v8::Local<v8::Value>& value)
 {
 	string type;
 
@@ -193,18 +194,13 @@ string MethodCache::ResolveJavaMethod(const FunctionCallbackInfo<Value>& args, c
 
 	jstring signature = (jstring) env.CallStaticObjectMethod(PLATFORM_CLASS, RESOLVE_METHOD_OVERLOAD_METHOD_ID, (jstring) jsClassName, (jstring) jsMethodName, arrArgs);
 
-	bool exceptionOccurred = ExceptionUtil::GetInstance()->CheckForJavaException(env);
-
 	string resolvedSignature;
 
-	if (!exceptionOccurred)
-	{
-		const char* str = env.GetStringUTFChars(signature, nullptr);
-		resolvedSignature = string(str);
-		env.ReleaseStringUTFChars(signature, str);
+	const char* str = env.GetStringUTFChars(signature, nullptr);
+	resolvedSignature = string(str);
+	env.ReleaseStringUTFChars(signature, str);
 
-		env.DeleteLocalRef(signature);
-	}
+	env.DeleteLocalRef(signature);
 
 	return resolvedSignature;
 }

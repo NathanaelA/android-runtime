@@ -1,4 +1,6 @@
 #include "SimpleProfiler.h"
+#include "NativeScriptException.h"
+#include "NativeScriptAssert.h"
 #include <algorithm>
 #include <time.h>
 #include <android/log.h>
@@ -46,7 +48,7 @@ SimpleProfiler::~SimpleProfiler()
 	}
 }
 
-void SimpleProfiler::Init(Isolate *isolate, Handle<ObjectTemplate>& globalTemplate)
+void SimpleProfiler::Init(Isolate *isolate, Local<ObjectTemplate>& globalTemplate)
 {
 	s_frames.reserve(10000);
 	auto funcName = String::NewFromUtf8(isolate, "__printProfilerData");
@@ -56,7 +58,18 @@ void SimpleProfiler::Init(Isolate *isolate, Handle<ObjectTemplate>& globalTempla
 
 void SimpleProfiler::PrintProfilerDataCallback(const FunctionCallbackInfo<Value>& args)
 {
+	try {
 	PrintProfilerData();
+
+	} catch (NativeScriptException& e) {
+		e.ReThrowToV8();
+	}
+	catch (std::exception& e) {
+		DEBUG_WRITE("Error: c++ exception: %s", e.what());
+	}
+	catch (...) {
+		DEBUG_WRITE("Error: c++ exception!");
+	}
 }
 
 void SimpleProfiler::PrintProfilerData()

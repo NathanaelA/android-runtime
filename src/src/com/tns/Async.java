@@ -125,6 +125,11 @@ public class Async
 			public void getHeaders(HttpURLConnection connection)
 			{
 				Map<String, List<String>> headers = connection.getHeaderFields();
+				if(headers == null) 
+				{
+					// no headers, this may happen if there is no internet connection currently available
+					return;
+				}
 
 				int size = headers.size();
 				if (size == 0)
@@ -155,6 +160,14 @@ public class Async
 				{
 					inStream = connection.getInputStream();
 				}
+				
+				if(inStream == null)
+				{
+					// inStream is null when receiving status code 401 or 407
+					// see this thread for more information http://stackoverflow.com/a/24986433
+					return;
+				}
+				
 				openedStreams.push(inStream);
 				
 				BufferedInputStream buffer = new java.io.BufferedInputStream(inStream, 4096);

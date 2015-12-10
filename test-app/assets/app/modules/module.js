@@ -1,4 +1,4 @@
-var tnsExtends = this.__extends;
+var tnsExtends = __extends;
 
 (function When_running_code_inside_a_module_it_should_have_acces_to_tns__exports_function() {
 	
@@ -17,3 +17,5 @@ module.exports = {
 		return true;
 	}
 }
+
+module.exports.value123 = 123;

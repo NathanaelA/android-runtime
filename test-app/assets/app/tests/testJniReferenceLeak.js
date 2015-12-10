@@ -94,6 +94,39 @@ describe("Tests JNI reference leak", function () {
 		
 		expect(n).toBe(N);
 	});
-
+	
+	it("test_if_global_reference_leaks_when_interface_implementation_is_created", function () {
+		
+		var n = 0;
+		var N = 100 * 1000;
+		
+		for (; n<N; n++)
+		{
+			var r = new java.lang.Runnable({ run: function(){} });
+		}
+		
+		expect(n).toBe(N);
+	});
+	
+	
+	it("test_passing_javascript_array_should_not_leak", function () {
+		
+		var n = 0;
+		var N = 100 * 1000;
+		
+		var arr = [1, 2, 3];
+		
+		var btn = new com.tns.tests.Button1();
+		
+		for (var i=0; i<N; i++) {
+		   var len = btn.getArrayLength(arr);
+		   if (len != 3) {
+			   break;
+		   }
+		   n = i;
+		}
+		
+		expect(n).toBe(N-1);
+	});
 
 });

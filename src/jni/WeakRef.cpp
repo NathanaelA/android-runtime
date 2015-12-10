@@ -1,7 +1,8 @@
 #include "WeakRef.h"
 #include "V8GlobalHelpers.h"
 #include "V8StringConstants.h"
-#include "ExceptionUtil.h"
+#include "NativeScriptAssert.h"
+#include "NativeScriptException.h"
 
 using namespace v8;
 using namespace tns;
@@ -11,9 +12,17 @@ WeakRef::WeakRef()
 {
 }
 
+void WeakRef::Init(v8::Isolate *isolate, Local<ObjectTemplate>& globalObjectTemplate, ObjectManager *objectManager)
+{
+	s_objectManager = objectManager;
+
+	globalObjectTemplate->Set(ConvertToV8String("WeakRef"), FunctionTemplate::New(isolate, ConstructorCallback));
+}
+
 void WeakRef::ConstructorCallback(const FunctionCallbackInfo<Value>& args)
 {
-	Isolate *isolate = Isolate::GetCurrent();
+	try {
+	auto isolate = args.GetIsolate();
 
 	if (args.IsConstructCall())
 	{
@@ -25,7 +34,7 @@ void WeakRef::ConstructorCallback(const FunctionCallbackInfo<Value>& args)
 			{
 				auto targetObj = target.As<Object>();
 
-				auto weakRef = Object::New(isolate);
+				auto weakRef = s_objectManager->GetEmptyObject(isolate);
 
 				auto poTarget = new Persistent<Object>(isolate, targetObj);
 				auto poHolder = new Persistent<Object>(isolate, weakRef);
@@ -42,17 +51,26 @@ void WeakRef::ConstructorCallback(const FunctionCallbackInfo<Value>& args)
 			}
 			else
 			{
-				ExceptionUtil::GetInstance()->ThrowExceptionToJs("The WeakRef constructor expects an object argument.");
+				throw NativeScriptException(string("The WeakRef constructor expects an object argument."));
 			}
 		}
 		else
 		{
-			ExceptionUtil::GetInstance()->ThrowExceptionToJs("The WeakRef constructor expects single parameter.");
+			throw NativeScriptException(string("The WeakRef constructor expects single parameter."));
 		}
 	}
 	else
 	{
-		ExceptionUtil::GetInstance()->ThrowExceptionToJs("WeakRef must be used as a construct call.");
+		throw NativeScriptException(string("WeakRef must be used as a construct call."));
+	}
+	} catch (NativeScriptException& e) {
+		e.ReThrowToV8();
+	}
+	catch (exception e) {
+		DEBUG_WRITE("Error: c++ exception: %s", e.what());
+	}
+	catch (...) {
+		DEBUG_WRITE("Error: c++ exception!");
 	}
 }
 
@@ -80,6 +98,7 @@ void WeakRef::WeakTargetCallback(const WeakCallbackData<Object, CallbackState>& 
 
 void WeakRef::WeakHolderCallback(const WeakCallbackData<Object, CallbackState>& data)
 {
+	try {
 	auto callbackState = data.GetParameter();
 	auto poHolder = callbackState->holder;
 	auto isolate = data.GetIsolate();
@@ -101,18 +120,38 @@ void WeakRef::WeakHolderCallback(const WeakCallbackData<Object, CallbackState>& 
 			delete callbackState;
 		}
 	}
+	} catch (NativeScriptException& e) {
+		e.ReThrowToV8();
+	}
+	catch (exception e) {
+		DEBUG_WRITE("Error: c++ exception: %s", e.what());
+	}
+	catch (...) {
+		DEBUG_WRITE("Error: c++ exception!");
+	}
 }
 
 void WeakRef::ClearCallback(const FunctionCallbackInfo<Value>& args)
 {
+	try {
 	auto holder = args.This();
 	auto isolate = Isolate::GetCurrent();
 
 	holder->SetHiddenValue(V8StringConstants::GetTarget(), External::New(isolate, nullptr));
+	} catch (NativeScriptException& e) {
+		e.ReThrowToV8();
+	}
+	catch (exception e) {
+		DEBUG_WRITE("Error: c++ exception: %s", e.what());
+	}
+	catch (...) {
+		DEBUG_WRITE("Error: c++ exception!");
+	}
 }
 
 void WeakRef::GettertCallback(const FunctionCallbackInfo<Value>& args)
 {
+	try {
 	auto holder = args.This();
 	auto poTarget = reinterpret_cast<Persistent<Object>*>(holder->GetHiddenValue(V8StringConstants::GetTarget()).As<External>()->Value());
 	auto isolate = Isolate::GetCurrent();
@@ -126,36 +165,66 @@ void WeakRef::GettertCallback(const FunctionCallbackInfo<Value>& args)
 	{
 		args.GetReturnValue().Set(Null(isolate));
 	}
+	} catch (NativeScriptException& e) {
+		e.ReThrowToV8();
+	}
+	catch (exception e) {
+		DEBUG_WRITE("Error: c++ exception: %s", e.what());
+	}
+	catch (...) {
+		DEBUG_WRITE("Error: c++ exception!");
+	}
 }
 
-Handle<Function> WeakRef::GetGetterFunction(Isolate *isolate)
+Local<Function> WeakRef::GetGetterFunction(Isolate *isolate)
 {
+	try {
 	if (s_poGetterFunc != nullptr)
 	{
 		return Local<Function>::New(isolate, *s_poGetterFunc);
 	}
 	else
 	{
-		Handle<Function> getterFunc = FunctionTemplate::New(isolate, GettertCallback)->GetFunction();
+		auto getterFunc = FunctionTemplate::New(isolate, GettertCallback)->GetFunction();
 		s_poGetterFunc = new Persistent<Function>(isolate, getterFunc);
 		return getterFunc;
 	}
+	} catch (NativeScriptException& e) {
+		e.ReThrowToV8();
+	}
+	catch (exception e) {
+		DEBUG_WRITE("Error: c++ exception: %s", e.what());
+	}
+	catch (...) {
+		DEBUG_WRITE("Error: c++ exception!");
+	}
 }
 
-Handle<Function> WeakRef::GetClearFunction(Isolate *isolate)
+Local<Function> WeakRef::GetClearFunction(Isolate *isolate)
 {
+	try {
 	if (s_poClearFunc != nullptr)
 	{
 		return Local<Function>::New(isolate, *s_poClearFunc);
 	}
 	else
 	{
-		Handle<Function> clearFunc = FunctionTemplate::New(isolate, ClearCallback)->GetFunction();
+		auto clearFunc = FunctionTemplate::New(isolate, ClearCallback)->GetFunction();
 		s_poClearFunc = new Persistent<Function>(isolate, clearFunc);
 		return clearFunc;
+	}
+	} catch (NativeScriptException& e) {
+		e.ReThrowToV8();
+	}
+	catch (exception e) {
+		DEBUG_WRITE("Error: c++ exception: %s", e.what());
+	}
+	catch (...) {
+		DEBUG_WRITE("Error: c++ exception!");
 	}
 }
 
 
 Persistent<Function>* WeakRef::s_poClearFunc = nullptr;
 Persistent<Function>* WeakRef::s_poGetterFunc = nullptr;
+ObjectManager* WeakRef::s_objectManager = nullptr;

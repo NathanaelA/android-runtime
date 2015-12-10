@@ -9,6 +9,8 @@ import java.io.UnsupportedEncodingException;
 import android.app.Activity;
 import android.app.PendingIntent;
 import android.app.PendingIntent.CanceledException;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.drawable.GradientDrawable;
@@ -23,28 +25,37 @@ import android.widget.TextView;
 class ErrorReport
 {
 	public static final String ERROR_FILE_NAME = "hasError";
-	static boolean HasApplicationCreateError = false;
+	private final Activity activity;
+	
+	private final static String EXTRA_NATIVESCRIPT_ERROR_REPORT = "NativeScriptErrorMessage";
+	private final static String EXTRA_ERROR_REPORT_MSG = "msg";
+	private final static int EXTRA_ERROR_REPORT_VALUE = 1;
 	
 	public ErrorReport(Activity activity)
 	{
 		this.activity = activity;
 	}
 	
-	static boolean startActivity(final Context context, Throwable ex)
+	static boolean startActivity(final Context context, String errorMessage)
 	{
-		String errorDetailedMessage = getErrorMessage(ex);
-		final String errMsg = errorDetailedMessage;
-		
-		final Intent intent = getIntent(context, errMsg);		
-		
+		final Intent intent = getIntent(context);
 		if(intent == null)
 		{
 			return false; //(if in release mode) don't do anything
 		}
 		
-		CreateErrorFile(context);
+		intent.putExtra(EXTRA_ERROR_REPORT_MSG, errorMessage);
 		
-		startPendingErrorActivity(context, intent);
+		createErrorFile(context);
+		
+		try
+		{
+			startPendingErrorActivity(context, intent);
+		}
+		catch (CanceledException e)
+		{
+			Log.d("ErrorReport", "Couldn't send pending intent! Exception: " + e.getMessage());
+		}
 
 		killProcess(context);	
 		
@@ -62,18 +73,11 @@ class ErrorReport
 		android.os.Process.killProcess(android.os.Process.myPid());
 	}
 	
-	static void startPendingErrorActivity(Context context, Intent intent)
+	static void startPendingErrorActivity(Context context, Intent intent) throws CanceledException
 	{
 		PendingIntent pendingIntent = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_CANCEL_CURRENT);
 		
-		try
-		{
-			pendingIntent.send(context, 0, intent);
-		}
-		catch (CanceledException e)
-		{
-			if (Platform.IsLogEnabled) Log.e(Platform.DEFAULT_LOG_TAG, "Couldn't send pending intent! Exception: " + e.getMessage());
-		}
+		pendingIntent.send(context, 0, intent);
 	}
 	
 	static String getErrorMessage(Throwable ex)
@@ -105,12 +109,12 @@ class ErrorReport
 		return content;
 	}
 	
-	static Intent getIntent(Context context, String errorMessage)
+	static Intent getIntent(Context context)
 	{
 		Class<?> errorActivityClass = Platform.getErrorActivityClass(); //can be null or can be provided beforehand
 				
 		//if in debug and errorActivityClass is not provided use ErrorReportActivity class
-		if(errorActivityClass == null && JsDebugger.shouldEnableDebugging(context)){
+		if(errorActivityClass == null && Util.isDebuggableApp(context)){
 			errorActivityClass = ErrorReportActivity.class;
 		}
 
@@ -124,7 +128,6 @@ class ErrorReport
 		
 		intent.putExtra(EXTRA_NATIVESCRIPT_ERROR_REPORT, EXTRA_ERROR_REPORT_VALUE);
 		intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_NEW_TASK);
-		intent.putExtra(EXTRA_ERROR_REPORT_MSG, errorMessage);
 		
 		return intent;
 	}
@@ -139,47 +142,45 @@ class ErrorReport
 	void buildUI()
 	{
 		Context context = activity;
-		
+		Intent intent = activity.getIntent();
+		final String msg = intent.getStringExtra(EXTRA_ERROR_REPORT_MSG);
+
+		//container
 		LinearLayout layout = new LinearLayout(context);
 		layout.setOrientation(LinearLayout.VERTICAL);
 		activity.setContentView(layout);
 		
+		//header
 		TextView txtHeader = new TextView(context);
-		txtHeader.setText("Callstack");
-
-		layout.addView(txtHeader);
+		txtHeader.setText("Unhandled Exception");
 		
-		Intent intent = activity.getIntent();
-		String msg = intent.getStringExtra(EXTRA_ERROR_REPORT_MSG);
-
+		//error + stacktrace
 		TextView txtErrorMsg = new TextView(context);
 		txtErrorMsg.setText(msg);
 		txtErrorMsg.setHeight(1000);
 		txtErrorMsg.setMovementMethod(new ScrollingMovementMethod());
 		
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(0xFFFFFFFF);
-        gd.setCornerRadius(5);
-        gd.setStroke(1, 0xFF000000);
-        txtErrorMsg.setBackground(gd);
-        
-		layout.addView(txtErrorMsg);
-		
-		Button btnClose = new Button(context);
-		btnClose.setText("Close");
-		btnClose.setOnClickListener(new OnClickListener()
+		// copy button
+		Button copyToClipboard = new Button(context);
+		copyToClipboard.setText("Copy to clipboard");
+		copyToClipboard.setOnClickListener(new OnClickListener()
 		{
 			@Override
 			public void onClick(View v)
 			{
-				activity.finish();
+
+				ClipboardManager clipboard = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+				ClipData clip = ClipData.newPlainText("nsError", msg);
+				clipboard.setPrimaryClip(clip);
 			}
 		});
-
-		layout.addView(btnClose);
+		
+		layout.addView(txtHeader);
+		layout.addView(txtErrorMsg);
+		layout.addView(copyToClipboard);
 	}
 	
-	private static void CreateErrorFile(final Context context)
+	private static void createErrorFile(final Context context)
 	{
 		try
 		{
@@ -188,13 +189,7 @@ class ErrorReport
 		}
 		catch (IOException e)
 		{
-			Log.d(Platform.DEFAULT_LOG_TAG, e.getMessage());
+			Log.d("ErrorReport", e.getMessage());
 		}
 	}
-	
-	private final Activity activity;
-	
-	private final static String EXTRA_NATIVESCRIPT_ERROR_REPORT = "NativeScriptErrorMessage";
-	private final static String EXTRA_ERROR_REPORT_MSG = "msg";
-	private final static int EXTRA_ERROR_REPORT_VALUE = 1;
 }

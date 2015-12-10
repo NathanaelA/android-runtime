@@ -16,13 +16,6 @@ public class TypeIDs
 	public static int JsObject = 9;
 	public static int Null = 10;
 
-	// TODO: handle array types
-
-	// public static int IntArray = 10;
-	// public static int CharArray = 10;
-	// public static int ByteArray = 10;
-	// public static int ByteArray = 10;
-
 	public static int GetObjectTypeId(Object object)
 	{
 		if (object == null)
@@ -65,10 +58,54 @@ public class TypeIDs
 		{
 			return TypeIDs.string;
 		}
-		// else if (object instanceof int[])
-		// {
-		// return TypeIDs.Array;
-		// }
+		else
+		{
+			return TypeIDs.JsObject;
+		}
+	}
+	
+	public static int GetObjectTypeId(Class<?> clazz)
+	{
+		if (clazz.equals(void.class))
+		{
+			return TypeIDs.Null;
+		}
+		else if (clazz.equals(int.class))
+		{
+			return TypeIDs.Int;
+		}
+		else if (clazz.equals(boolean.class))
+		{
+			return TypeIDs.Boolean;
+		}
+		else if (clazz.equals(char.class))
+		{
+			return TypeIDs.Char;
+		}
+		else if (clazz.equals(byte.class))
+		{
+			return TypeIDs.Byte;
+		}
+		else if (clazz.equals(short.class))
+		{
+			return TypeIDs.Short;
+		}
+		else if (clazz.equals(long.class))
+		{
+			return TypeIDs.Long;
+		}
+		else if (clazz.equals(float.class))
+		{
+			return TypeIDs.Float;
+		}
+		else if (clazz.equals(double.class))
+		{
+			return TypeIDs.Double;
+		}
+		else if (clazz.equals(String.class))
+		{
+			return TypeIDs.string;
+		}
 		else
 		{
 			return TypeIDs.JsObject;

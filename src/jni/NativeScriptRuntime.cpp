@@ -9,7 +9,7 @@
 #include "JsArgToArrayConverter.h"
 #include "ArgConverter.h"
 #include "v8-profiler.h"
-#include "Constants.h"
+#include "NativeScriptException.h"
 #include <assert.h>
 #include <iostream>
 #include <sstream>
@@ -20,7 +20,6 @@
 #include "MethodCache.h"
 #include "JsDebugger.h"
 #include "SimpleProfiler.h"
-#include "Require.h"
 
 using namespace v8;
 using namespace std;
@@ -38,9 +37,6 @@ void NativeScriptRuntime::Init(JavaVM *jvm, ObjectManager *objectManager)
 	PlatformClass = env.FindClass("com/tns/Platform");
 	assert(PlatformClass != nullptr);
 
-	RequireClass = env.FindClass("com/tns/Require");
-	assert(RequireClass != nullptr);
-
 	RESOLVE_CLASS_METHOD_ID = env.GetStaticMethodID(PlatformClass, "resolveClass", "(Ljava/lang/String;[Ljava/lang/String;)Ljava/lang/Class;");
 	assert(RESOLVE_CLASS_METHOD_ID != nullptr);
 
@@ -53,12 +49,6 @@ void NativeScriptRuntime::Init(JavaVM *jvm, ObjectManager *objectManager)
 	GET_TYPE_METADATA = env.GetStaticMethodID(PlatformClass, "getTypeMetadata", "(Ljava/lang/String;I)[Ljava/lang/String;");
 	assert(GET_TYPE_METADATA != nullptr);
 
-	APP_FAIL_METHOD_ID = env.GetStaticMethodID(PlatformClass, "APP_FAIL", "(Ljava/lang/String;)V");
-	assert(APP_FAIL_METHOD_ID != nullptr);
-
-	GET_MODULE_PATH_METHOD_ID = env.GetStaticMethodID(RequireClass, "getModulePath", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
-	assert(GET_MODULE_PATH_METHOD_ID != nullptr);
-
 	ENABLE_VERBOSE_LOGGING_METHOD_ID = env.GetStaticMethodID(PlatformClass, "enableVerboseLogging", "()V");
 	assert(ENABLE_VERBOSE_LOGGING_METHOD_ID != nullptr);
 
@@ -68,17 +58,7 @@ void NativeScriptRuntime::Init(JavaVM *jvm, ObjectManager *objectManager)
 	GET_CHANGE_IN_BYTES_OF_USED_MEMORY_METHOD_ID = env.GetStaticMethodID(PlatformClass, "getChangeInBytesOfUsedMemory", "()J");
 	assert(GET_CHANGE_IN_BYTES_OF_USED_MEMORY_METHOD_ID != nullptr);
 
-	MetadataNode::SubscribeCallbacks(objectManager,
-									NativeScriptRuntime::GetJavaField,
-									NativeScriptRuntime::SetJavaField,
-									NativeScriptRuntime::GetArrayElement,
-									NativeScriptRuntime::SetArrayElement,
-									NativeScriptRuntime::CallJavaMethod,
-									NativeScriptRuntime::RegisterInstance,
-									NativeScriptRuntime::GetTypeMetadata,
-									NativeScriptRuntime::FindClass,
-									NativeScriptRuntime::GetArrayLength,
-									NativeScriptRuntime::ResolveClass);
+	MetadataNode::Init(objectManager);
 
 	NativeScriptRuntime::objectManager = objectManager;
 
@@ -91,33 +71,15 @@ void NativeScriptRuntime::Init(JavaVM *jvm, ObjectManager *objectManager)
 	MethodCache::Init();
 }
 
-bool NativeScriptRuntime::RegisterInstance(const Handle<Object>& jsObject, const std::string& fullClassName, const ArgsWrapper& argWrapper, const Handle<Object>& implementationObject, bool isInterface)
+bool NativeScriptRuntime::RegisterInstance(const Local<Object>& jsObject, const std::string& fullClassName, const ArgsWrapper& argWrapper, const Local<Object>& implementationObject, bool isInterface)
 {
 	bool success;
 
 	DEBUG_WRITE("RegisterInstance called for '%s'", fullClassName.c_str());
 
-	if(fullClassName == "java/lang/Object_") {
-		int a = 5;
-	}
 	JEnv env;
 
-	// get class from implementation object if you can
-	jclass generatedJavaClass = nullptr;
-	bool classIsResolved = false;
-	if (!implementationObject.IsEmpty())
-	{
-		Local < Value > val = implementationObject->GetHiddenValue(ConvertToV8String(fullClassName));
-		if (!val.IsEmpty())
-		{
-			void* voidPointerToVal = val.As<External>()->Value();
-			generatedJavaClass = reinterpret_cast<jclass>(voidPointerToVal);
-			classIsResolved = true;
-		}
-	}
-	if(!classIsResolved) {
-		generatedJavaClass = ResolveClass(fullClassName, implementationObject);
-	}
+	jclass generatedJavaClass = ResolveClass(fullClassName, implementationObject);
 
 	int javaObjectID = objectManager->GenerateNewObjectID();
 
@@ -143,48 +105,59 @@ bool NativeScriptRuntime::RegisterInstance(const Handle<Object>& jsObject, const
 	return success;
 }
 
-jclass NativeScriptRuntime::ResolveClass(const std::string& fullClassname, const Handle<Object>& implementationObject) {
+jclass NativeScriptRuntime::ResolveClass(const std::string& fullClassname, const Local<Object>& implementationObject) {
 
-	JEnv env;
+	auto itFound = s_classCache.find(fullClassname);
 
-	//get needed arguments in order to load binding
-	JniLocalRef javaFullClassName(env.NewStringUTF(fullClassname.c_str()));
+	jclass globalRefToGeneratedClass;
 
-	jobjectArray methodOverrides = GetMethodOverrides(env, implementationObject);
+	if (itFound != s_classCache.end())
+	{
+		globalRefToGeneratedClass = itFound->second;
+	}
+	else
+	{
+		JEnv env;
 
-	//create or load generated binding (java class)
-	JniLocalRef generatedClass(env.CallStaticObjectMethod(PlatformClass, RESOLVE_CLASS_METHOD_ID,  (jstring)javaFullClassName, methodOverrides));
-	jclass globalRefToGeneratedClass = reinterpret_cast<jclass>(env.NewGlobalRef(generatedClass));
+		//get needed arguments in order to load binding
+		JniLocalRef javaFullClassName(env.NewStringUTF(fullClassname.c_str()));
+
+		jobjectArray methodOverrides = GetMethodOverrides(env, implementationObject);
+
+		//create or load generated binding (java class)
+		JniLocalRef generatedClass(env.CallStaticObjectMethod(PlatformClass, RESOLVE_CLASS_METHOD_ID,  (jstring)javaFullClassName, methodOverrides));
+		globalRefToGeneratedClass = reinterpret_cast<jclass>(env.NewGlobalRef(generatedClass));
+
+		s_classCache.insert(make_pair(fullClassname, globalRefToGeneratedClass));
+	}
 
 	return globalRefToGeneratedClass;
 }
 
-Handle<Value> NativeScriptRuntime::GetArrayElement(const Handle<Object>& array, uint32_t index, const string& arraySignature)
+Local<Value> NativeScriptRuntime::GetArrayElement(const Local<Object>& array, uint32_t index, const string& arraySignature)
 {
 	return arrayElementAccessor.GetArrayElement(array, index, arraySignature);
 }
 
-void NativeScriptRuntime::SetArrayElement(const Handle<Object>& array, uint32_t index, const string& arraySignature, Handle<Value>& value)
+void NativeScriptRuntime::SetArrayElement(const Local<Object>& array, uint32_t index, const string& arraySignature, Local<Value>& value)
 {
 	JEnv env;
 
 	arrayElementAccessor.SetArrayElement(array, index, arraySignature, value);
-
-	ExceptionUtil::GetInstance()->CheckForJavaException(env);
 }
 
-Handle<Value> NativeScriptRuntime::GetJavaField(const Handle<Object>& caller, FieldCallbackData *fieldData)
+Local<Value> NativeScriptRuntime::GetJavaField(const Local<Object>& caller, FieldCallbackData *fieldData)
 {
 	return fieldAccessor.GetJavaField(caller, fieldData);
 }
 
-void NativeScriptRuntime::SetJavaField(const Handle<Object>& target, const Handle<Value>& value, FieldCallbackData *fieldData)
+void NativeScriptRuntime::SetJavaField(const Local<Object>& target, const Local<Value>& value, FieldCallbackData *fieldData)
 {
 	fieldAccessor.SetJavaField(target, value, fieldData);
 }
 
 
-void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const string& className, const string& methodName, MetadataEntry *entry, bool isStatic, bool isSuper, const v8::FunctionCallbackInfo<v8::Value>& args)
+void NativeScriptRuntime::CallJavaMethod(const Local<Object>& caller, const string& className, const string& methodName, MetadataEntry *entry, bool isStatic, bool isSuper, const v8::FunctionCallbackInfo<v8::Value>& args)
 {
 	SET_PROFILER_FRAME();
 
@@ -192,7 +165,10 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 
 	jclass clazz;
 	jmethodID mid;
-	string sig;
+	string *sig = nullptr;
+	string *returnType = nullptr;
+	auto retType = MethodReturnType::Unknown;
+	MethodCache::CacheMethodInfo mi;
 
 	if ((entry != nullptr) && entry->isResolved)
 	{
@@ -200,8 +176,8 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 
 		if (entry->memberId == nullptr)
 		{
-			entry->clazz = env.FindClass(className);
-			if (entry->clazz == nullptr)
+			clazz = env.FindClass(className);
+			if (clazz == nullptr)
 			{
 				MetadataNode* callerNode = MetadataNode::GetNodeFromHandle(caller);
 				const string callerClassName = callerNode->GetName();
@@ -210,47 +186,47 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 				clazz = env.FindClass(callerClassName);
 				if (clazz == nullptr)
 				{
+					//todo: plamen5kov: throw exception here
 					DEBUG_WRITE("Cannot resolve caller's class name: %s", callerClassName.c_str());
 					return;
 				}
 
-				mid = isStatic ?
+				entry->memberId = isStatic ?
 						env.GetStaticMethodID(clazz, methodName, entry->sig) :
 						env.GetMethodID(clazz, methodName, entry->sig);
 
-				if (mid == nullptr)
+				if (entry->memberId == nullptr)
 				{
+					//todo: plamen5kov: throw exception here
 					DEBUG_WRITE("Cannot resolve a method %s on caller class: %s", methodName.c_str(), callerClassName.c_str());
 					return;
 				}
-
 			}
 			else
 			{
 				entry->memberId = isStatic ?
-									env.GetStaticMethodID(entry->clazz, methodName, entry->sig) :
-									env.GetMethodID(entry->clazz, methodName, entry->sig);
+									env.GetStaticMethodID(clazz, methodName, entry->sig) :
+									env.GetMethodID(clazz, methodName, entry->sig);
 
 				if (entry->memberId == nullptr)
 				{
+					//todo: plamen5kov: throw exception here
 					DEBUG_WRITE("Cannot resolve a method %s on class: %s", methodName.c_str(), className.c_str());
 					return;
 				}
 			}
+			entry->clazz = clazz;
 		}
 
-		if (entry->clazz != nullptr)
-		{
-			clazz = entry->clazz;
-			mid = reinterpret_cast<jmethodID>(entry->memberId);
-		}
-
-		sig = entry->sig;
+		mid = reinterpret_cast<jmethodID>(entry->memberId);
+		clazz = entry->clazz;
+		sig = &entry->sig;
+		returnType = &entry->returnType;
+		retType = entry->retType;
 	}
 	else
 	{
 		DEBUG_WRITE("Resolving method: %s on className %s", methodName.c_str(), className.c_str());
-		MethodCache::CacheMethodInfo mi;
 
 		clazz = env.FindClass(className);
 		if (clazz != nullptr)
@@ -275,15 +251,12 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 			}
 		}
 
-
 		clazz = mi.clazz;
 		mid = mi.mid;
-		sig = mi.signature;
+		sig = &mi.signature;
+		returnType = &mi.returnType;
+		retType = mi.retType;
 	}
-
-
-
-
 
 
 	if (!isStatic)
@@ -295,13 +268,12 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 		DEBUG_WRITE("CallJavaMethod called %s.%s. static method", className.c_str(), methodName.c_str());
 	}
 
-	JsArgConverter argConverter(args, false, sig);
+	JsArgConverter argConverter(args, false, *sig, entry);
 
 	if (!argConverter.IsValid())
 	{
 		JsArgConverter::Error err = argConverter.GetError();
-		ExceptionUtil::GetInstance()->ThrowExceptionToJs(err.msg);
-		return;
+		throw NativeScriptException(err.msg);
 	}
 
 	auto isolate = Isolate::GetCurrent();
@@ -317,17 +289,13 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 		{
 			stringstream ss;
 			ss << "No java object found on which to call \"" << methodName << "\" method. It is possible your Javascript object is not linked with the corresponding Java class. Try passing context(this) to the constructor function.";
-			string exceptionMessage = ss.str();
-			isolate->ThrowException(v8::Exception::ReferenceError(ConvertToV8String(exceptionMessage)));
-			return;
+			throw NativeScriptException(ss.str());
 		}
 	}
 
-	auto returnType = GetReturnType(sig);
-
-	switch (returnType[0])
+	switch (retType)
 	{
-		case 'V': //void
+		case MethodReturnType::Void:
 		{
 			if (isStatic)
 			{
@@ -343,7 +311,7 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 			}
 			break;
 		}
-		case 'Z': //bool
+		case MethodReturnType::Boolean:
 		{
 			jboolean result;
 			if (isStatic)
@@ -361,7 +329,7 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 			args.GetReturnValue().Set(result != 0 ? True(isolate) : False(isolate));
 			break;
 		}
-		case 'B': //byte
+		case MethodReturnType::Byte:
 		{
 			jbyte result;
 			if (isStatic)
@@ -379,7 +347,7 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 			args.GetReturnValue().Set(result);
 			break;
 		}
-		case 'C': //char
+		case MethodReturnType::Char:
 		{
 			jchar result;
 			if (isStatic)
@@ -402,7 +370,7 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 			env.ReleaseStringUTFChars(str, resP);
 			break;
 		}
-		case 'S': //short
+		case MethodReturnType::Short:
 		{
 			jshort result;
 			if (isStatic)
@@ -420,7 +388,7 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 			args.GetReturnValue().Set(result);
 			break;
 		}
-		case 'I': //int
+		case MethodReturnType::Int:
 		{
 			jint result;
 			if (isStatic)
@@ -439,7 +407,7 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 			break;
 
 		}
-		case 'J': //long
+		case MethodReturnType::Long:
 		{
 			jlong result;
 			if (isStatic)
@@ -458,7 +426,7 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 			args.GetReturnValue().Set(jsLong);
 			break;
 		}
-		case 'F': //float
+		case MethodReturnType::Float:
 		{
 			jfloat result;
 			if (isStatic)
@@ -476,7 +444,7 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 			args.GetReturnValue().Set((double) result); //TODO: handle float value here correctly.
 			break;
 		}
-		case 'D': //double
+		case MethodReturnType::Double:
 		{
 			jdouble result;
 			if (isStatic)
@@ -493,103 +461,96 @@ void NativeScriptRuntime::CallJavaMethod(const Handle<Object>& caller, const str
 			}
 			args.GetReturnValue().Set(result);
 			break;
-
 		}
-		case '[':
-		case 'L':
+		case MethodReturnType::String:
 		{
-			bool isString = returnType == "Ljava/lang/String;";
-
 			jobject result = nullptr;
 			bool exceptionOccurred;
 
-			if (isString)
+			if (isStatic)
 			{
-				if (isStatic)
-				{
-					result = env.CallStaticObjectMethodA(clazz, mid, javaArgs);
-				}
-				else if (isSuper)
-				{
-					result = env.CallNonvirtualObjectMethodA(callerJavaObject, clazz, mid, javaArgs);
-				}
-				else
-				{
-					result = env.CallObjectMethodA(callerJavaObject, mid, javaArgs);
-				}
-
-				exceptionOccurred = env.ExceptionCheck() == JNI_TRUE;
-
-				if (!exceptionOccurred)
-				{
-					auto resultV8String = ArgConverter::jstringToV8String((jstring) result);
-					args.GetReturnValue().Set(resultV8String);
-				}
+				result = env.CallStaticObjectMethodA(clazz, mid, javaArgs);
+			}
+			else if (isSuper)
+			{
+				result = env.CallNonvirtualObjectMethodA(callerJavaObject, clazz, mid, javaArgs);
 			}
 			else
 			{
-				if (isStatic)
+				result = env.CallObjectMethodA(callerJavaObject, mid, javaArgs);
+			}
+
+			if (result != nullptr)
+			{
+				auto objectResult = ArgConverter::jstringToV8String(static_cast<jstring>(result));
+				args.GetReturnValue().Set(objectResult);
+				env.DeleteLocalRef(result);
+			}
+			else
+			{
+				args.GetReturnValue().Set(Null(isolate));
+			}
+
+			break;
+		}
+		case MethodReturnType::Object:
+		{
+			jobject result = nullptr;
+			bool exceptionOccurred;
+
+			if (isStatic)
+			{
+				result = env.CallStaticObjectMethodA(clazz, mid, javaArgs);
+			}
+			else if (isSuper)
+			{
+				result = env.CallNonvirtualObjectMethodA(callerJavaObject, clazz, mid, javaArgs);
+			}
+			else
+			{
+				result = env.CallObjectMethodA(callerJavaObject, mid, javaArgs);
+			}
+
+			if (result != nullptr)
+			{
+				auto isString = env.IsInstanceOf(result, JAVA_LANG_STRING);
+
+				Local<Value> objectResult;
+				if (isString)
 				{
-					result = env.CallStaticObjectMethodA(clazz, mid, javaArgs);
-				}
-				else if (isSuper)
-				{
-					result = env.CallNonvirtualObjectMethodA(callerJavaObject, clazz, mid, javaArgs);
+					objectResult = ArgConverter::jstringToV8String((jstring)result);
 				}
 				else
 				{
-					result = env.CallObjectMethodA(callerJavaObject, mid, javaArgs);
-				}
+					jint javaObjectID = objectManager->GetOrCreateObjectId(result);
+					objectResult = objectManager->GetJsObjectByJavaObject(javaObjectID);
 
-				exceptionOccurred = env.ExceptionCheck() == JNI_TRUE;
-
-				if (!exceptionOccurred)
-				{
-					if (result != nullptr)
+					if (objectResult.IsEmpty())
 					{
-						isString = env.IsInstanceOf(result, JAVA_LANG_STRING);
-
-						Handle<Value> objectResult;
-						if (isString)
-						{
-							objectResult = ArgConverter::jstringToV8String((jstring)result);
-						}
-						else
-						{
-							jint javaObjectID = objectManager->GetOrCreateObjectId(result);
-							objectResult = objectManager->GetJsObjectByJavaObject(javaObjectID);
-
-							if (objectResult.IsEmpty())
-							{
-								objectResult = objectManager->CreateJSWrapper(javaObjectID, returnType, result);
-							}
-						}
-
-						args.GetReturnValue().Set(objectResult);
-					}
-					else
-					{
-						args.GetReturnValue().Set(Null(isolate));
+						objectResult = objectManager->CreateJSWrapper(javaObjectID, *returnType, result);
 					}
 				}
-			}
 
-			if (!exceptionOccurred)
-			{
+				args.GetReturnValue().Set(objectResult);
 				env.DeleteLocalRef(result);
+			}
+			else
+			{
+				args.GetReturnValue().Set(Null(isolate));
 			}
 
 			break;
 		}
 		default:
 		{
-			// TODO:
-			ASSERT_FAIL("Unknown return type");
+			assert(false);
 			break;
 		}
 	}
 
-	if (!ExceptionUtil::GetInstance()->CheckForJavaException(env))
+	static uint32_t adjustMemCount = 0;
+
+	if ((++adjustMemCount % 2) == 0)
 	{
 		AdjustAmountOfExternalAllocatedMemory(env, isolate);
 	}
@@ -607,19 +568,9 @@ int64_t NativeScriptRuntime::AdjustAmountOfExternalAllocatedMemory(JEnv& env, Is
 }
 
 
-Handle<Object> NativeScriptRuntime::CreateJSWrapper(jint javaObjectID, const string& typeName)
+Local<Object> NativeScriptRuntime::CreateJSWrapper(jint javaObjectID, const string& typeName)
 {
 	return objectManager->CreateJSWrapper(javaObjectID, typeName);
-}
-
-
-string NativeScriptRuntime::GetReturnType(const string& methodSignature)
-{
-	int idx = methodSignature.find(')'); //TODO: throw error if not found
-
-	string jniReturnType = methodSignature.substr(idx + 1);
-
-	return jniReturnType;
 }
 
 
@@ -646,17 +597,13 @@ jobject NativeScriptRuntime::CreateJavaInstance(int objectID, const std::string&
 				(jint) objectID,
 				ctorId);
 
-		bool exceptionFound = ExceptionUtil::GetInstance()->CheckForJavaException(env);
 
-		if (!exceptionFound)
-		{
-			instance = obj;
-		}
+		instance = obj;
 	}
 	else
 	{
 		JsArgToArrayConverter::Error err = argConverter.GetError();
-		ExceptionUtil::GetInstance()->ThrowExceptionToJs(err.msg);
+		throw NativeScriptException(err.msg);
 	}
 
 	return instance;
@@ -690,7 +637,7 @@ int NativeScriptRuntime::GetCachedConstructorId(JEnv& env, const FunctionCallbac
 
 
 //delete the returned local reference after use
-jobjectArray NativeScriptRuntime::GetMethodOverrides(JEnv& env, const Handle<Object>& implementationObject)
+jobjectArray NativeScriptRuntime::GetMethodOverrides(JEnv& env, const Local<Object>& implementationObject)
 {
 	if (implementationObject.IsEmpty())
 	{
@@ -732,16 +679,26 @@ jobjectArray NativeScriptRuntime::GetMethodOverrides(JEnv& env, const Handle<Obj
 
 void NativeScriptRuntime::LogMethodCallback(const v8::FunctionCallbackInfo<v8::Value>& args)
 {
-	ASSERT_MESSAGE(args.Length() == 1, "Log should be called with string parameter");
-	ASSERT_MESSAGE(!args[0]->IsUndefined() && !args[0]->IsNull(), "Log called with undefined");
-	ASSERT_MESSAGE(args[0]->IsString(), "Log should be called with string parameter");
-
-	String::Utf8Value message(args[0]->ToString());
-	DEBUG_WRITE("%s", *message);
+	try {
+	if ((args.Length() > 0) && args[0]->IsString())
+	{
+		String::Utf8Value message(args[0]->ToString());
+		DEBUG_WRITE("%s", *message);
+	}
+	} catch (NativeScriptException& e) {
+		e.ReThrowToV8();
+	}
+	catch (exception e) {
+		DEBUG_WRITE("Error: c++ exception: %s", e.what());
+	}
+	catch (...) {
+		DEBUG_WRITE("Error: c++ exception!");
+	}
 }
 
 void NativeScriptRuntime::DumpReferenceTablesMethodCallback(const v8::FunctionCallbackInfo<v8::Value>& args)
 {
+	try {
 	JEnv env;
 	jclass vmDbgClass = env.FindClass("dalvik/system/VMDebug");
 	if (vmDbgClass != nullptr)
@@ -752,202 +709,61 @@ void NativeScriptRuntime::DumpReferenceTablesMethodCallback(const v8::FunctionCa
 			env.CallStaticVoidMethod(vmDbgClass, mid);
 		}
 	}
+	} catch (NativeScriptException& e) {
+		e.ReThrowToV8();
+	}
+	catch (exception e) {
+		DEBUG_WRITE("Error: c++ exception: %s", e.what());
+	}
+	catch (...) {
+		DEBUG_WRITE("Error: c++ exception!");
+	}
 }
 
 void NativeScriptRuntime::EnableVerboseLoggingMethodCallback(const v8::FunctionCallbackInfo<v8::Value>& args)
 {
+	try {
+	tns::LogEnabled = true;
 	JEnv env;
 	env.CallStaticVoidMethod(PlatformClass, ENABLE_VERBOSE_LOGGING_METHOD_ID);
+	} catch (NativeScriptException& e) {
+		e.ReThrowToV8();
+	}
+	catch (exception e) {
+		DEBUG_WRITE("Error: c++ exception: %s", e.what());
+	}
+	catch (...) {
+		DEBUG_WRITE("Error: c++ exception!");
+	}
 }
 
 void NativeScriptRuntime::DisableVerboseLoggingMethodCallback(const v8::FunctionCallbackInfo<v8::Value>& args)
 {
+	try {
+	tns::LogEnabled = false;
 	JEnv env;
 	env.CallStaticVoidMethod(PlatformClass, DISABLE_VERBOSE_LOGGING_METHOD_ID);
+	} catch (NativeScriptException& e) {
+		e.ReThrowToV8();
+	}
+	catch (exception e) {
+		DEBUG_WRITE("Error: c++ exception: %s", e.what());
+	}
+	catch (...) {
+		DEBUG_WRITE("Error: c++ exception!");
+	}
 }
 
 void NativeScriptRuntime::ExitMethodCallback(const v8::FunctionCallbackInfo<v8::Value>& args)
 {
 	auto msg = ConvertToString(args[0].As<String>());
-	ASSERT_MESSAGE(false, "%s", msg.c_str());
+	DEBUG_WRITE_FATAL("FORCE EXIT: %s", msg.c_str());
 	exit(-1);
 }
 
-void NativeScriptRuntime::APP_FAIL(const char *message)
-{
-	//ASSERT_FAIL(message);
-
-	JEnv env;
-	jstring msg = env.NewStringUTF(message);
-	env.CallStaticVoidMethod(PlatformClass, APP_FAIL_METHOD_ID, msg);
-}
-
-
-void NativeScriptRuntime::AddApplicationModule(const string& appName, v8::Persistent<v8::Object>* applicationModule)
-{
-	loadedModules.insert(make_pair(appName, applicationModule));
-}
-
-void NativeScriptRuntime::CreateGlobalCastFunctions(const Handle<ObjectTemplate>& globalTemplate)
+void NativeScriptRuntime::CreateGlobalCastFunctions(const Local<ObjectTemplate>& globalTemplate)
 {
 	castFunctions.CreateGlobalCastFunctions(globalTemplate);
-}
-
-
-void NativeScriptRuntime::CompileAndRun(string modulePath, bool& hasError, Handle<Object>& moduleObj, bool isBootstrapCall)
-{
-	auto isolate = Isolate::GetCurrent();
-
-	Local < Value > exportObj = Object::New(isolate);
-	auto tmpExportObj = new Persistent<Object>(isolate, exportObj.As<Object>());
-	loadedModules.insert(make_pair(modulePath, tmpExportObj));
-
-	TryCatch tc;
-
-	auto scriptText = Require::LoadModule(modulePath);
-
-	DEBUG_WRITE("Compiling script (module %s)", modulePath.c_str());
-	Local < String > fullRequiredModulePath = ConvertToV8String(modulePath);
-	auto script = Script::Compile(scriptText, fullRequiredModulePath);
-	DEBUG_WRITE("Compiled script (module %s)", modulePath.c_str());
-
-	if (ExceptionUtil::GetInstance()->HandleTryCatch(tc, "Script " + modulePath + " contains compilation errors!"))
-	{
-		loadedModules.erase(modulePath);
-		tmpExportObj->Reset();
-		delete tmpExportObj;
-		hasError = true;
-	}
-	else if (script.IsEmpty())
-	{
-		//think about more descriptive message -> [script_name] was empty
-		DEBUG_WRITE("%s was empty", modulePath.c_str());
-	}
-	else
-	{
-		DEBUG_WRITE("Running script (module %s)", modulePath.c_str());
-
-		TryCatch tcRequire;
-
-		Local < Function > f = script->Run().As<Function>();
-		if (ExceptionUtil::GetInstance()->HandleTryCatch(tc))
-		{
-			DEBUG_WRITE("Exception was handled in java code");
-		}
-
-		//this is done so the initial bootstrap function is persistent (and to keep old logic)
-		if(isBootstrapCall) {
-			auto persistentAppModule = new Persistent<Object>(isolate, f);
-		}
-
-		auto result = f->Call(Object::New(isolate), 1, &exportObj);
-		if(ExceptionUtil::GetInstance()->HandleTryCatch(tc))
-		{
-			DEBUG_WRITE("Exception was handled in java code");
-		}
-		else
-		{
-			moduleObj = result.As<Object>();
-		}
-
-		// introducing isBootstrapCall in order to save the flow as it was (latter on we can think about including the following code for the bootstrap (initial) call
-		if(!isBootstrapCall) {
-			DEBUG_WRITE("After Running script (module %s)", modulePath.c_str());
-
-			if (ExceptionUtil::GetInstance()->HandleTryCatch(tcRequire))
-			{
-				loadedModules.erase(modulePath);
-				tmpExportObj->Reset();
-				delete tmpExportObj;
-				hasError = true;
-				tcRequire.ReThrow();
-			}
-			else
-			{
-				if (moduleObj.IsEmpty())
-				{
-					auto objectTemplate = ObjectTemplate::New();
-					moduleObj = objectTemplate->NewInstance();
-				}
-
-				DEBUG_WRITE("Script completed (module %s)", modulePath.c_str());
-
-				if (!moduleObj->StrictEquals(exportObj))
-				{
-					loadedModules.erase(modulePath);
-					tmpExportObj->Reset();
-					delete tmpExportObj;
-
-					auto persistentModuleObject = new Persistent<Object>(isolate, moduleObj.As<Object>());
-
-					loadedModules.insert(make_pair(modulePath, persistentModuleObject));
-				}
-			}
-		}
-	}
-	if (tc.HasCaught())
-	{
-		tc.ReThrow();
-	}
-}
-
-void NativeScriptRuntime::RequireCallback(const v8::FunctionCallbackInfo<v8::Value>& args)
-{
-	SET_PROFILER_FRAME();
-
-	ASSERT_MESSAGE(args.Length() == 2, "require should be called with two parameters");
-	ASSERT_MESSAGE(!args[0]->IsUndefined() && !args[0]->IsNull(), "require called with undefined moduleName parameter");
-	ASSERT_MESSAGE(!args[1]->IsUndefined() && !args[1]->IsNull(), "require called with undefined callingModulePath parameter");
-	ASSERT_MESSAGE(args[0]->IsString(), "require should be called with string parameter");
-	ASSERT_MESSAGE(args[1]->IsString(), "require should be called with string parameter");
-
-	string moduleName = ConvertToString(args[0].As<String>());
-	string callingModuleDirName = ConvertToString(args[1].As<String>());
-
-	JEnv env;
-	JniLocalRef jsModulename(env.NewStringUTF(moduleName.c_str()));
-	JniLocalRef jsCallingModuleDirName(env.NewStringUTF(callingModuleDirName.c_str()));
-	JniLocalRef jsModulePath(env.CallStaticObjectMethod(RequireClass, GET_MODULE_PATH_METHOD_ID, (jstring) jsModulename, (jstring) jsCallingModuleDirName));
-
-	auto isolate = Isolate::GetCurrent();
-
-	// cache the required modules by full path, not name only, since there might be some collisions with relative paths and names
-	string modulePath = ArgConverter::jstringToString((jstring) jsModulePath);
-	if(modulePath == ""){
-		// module not found
-		stringstream ss;
-		ss << "Module \"" << moduleName << "\" not found";
-		string exception = ss.str();
-		ExceptionUtil::GetInstance()->ThrowExceptionToJs(exception);
-		return;
-	}
-	if (modulePath == "EXTERNAL_FILE_ERROR")
-	{
-		// module not found
-		stringstream ss;
-		ss << "Module \"" << moduleName << "\" is located on the external storage. Modules can be private application files ONLY";
-		string exception = ss.str();
-		ExceptionUtil::GetInstance()->ThrowExceptionToJs(exception);
-		return;
-	}
-
-	auto it = loadedModules.find(modulePath);
-
-	Handle<Object> moduleObj;
-	bool hasError = false;
-
-	if (it == loadedModules.end())
-	{
-		CompileAndRun(modulePath, hasError, moduleObj, false/*is bootstrap call*/);
-	}
-	else
-	{
-		moduleObj = Local<Object>::New(isolate, *((*it).second));
-	}
-
-	if(!hasError){
-		args.GetReturnValue().Set(moduleObj);
-	}
 }
 
 vector<string> NativeScriptRuntime::GetTypeMetadata(const string& name, int index)
@@ -978,19 +794,21 @@ vector<string> NativeScriptRuntime::GetTypeMetadata(const string& name, int inde
 	return result;
 }
 
-void NativeScriptRuntime::BuildMetadata(JEnv& env, jstring filesPath)
+void NativeScriptRuntime::BuildMetadata(JEnv& env, string filesPath)
 {
 	timeval time1;
 	gettimeofday(&time1, nullptr);
 
-	string baseDir = ArgConverter::jstringToString(filesPath);
+	string baseDir = filesPath;
 	baseDir.append("/metadata");
 	string nodesFile = baseDir + "/treeNodeStream.dat";
 	string namesFile = baseDir + "/treeStringsStream.dat";
 	string valuesFile = baseDir + "/treeValueStream.dat";
 
 	FILE *f = fopen(nodesFile.c_str(), "rb");
-	assert(f != nullptr);
+	if(f == nullptr) {
+		throw NativeScriptException(string("metadata file (treeNodeStream.dat) couldn't be opened!"));
+	}
 	fseek(f, 0, SEEK_END);
 	int lenNodes = ftell(f);
 	assert((lenNodes % sizeof(MetadataTreeNodeRawData)) == 0);
@@ -1002,7 +820,9 @@ void NativeScriptRuntime::BuildMetadata(JEnv& env, jstring filesPath)
 	const int _512KB = 524288;
 
 	f = fopen(namesFile.c_str(), "rb");
-	assert(f != nullptr);
+	if(f == nullptr) {
+		throw NativeScriptException(string("metadata file (treeStringsStream.dat) couldn't be opened!"));
+	}
 	fseek(f, 0, SEEK_END);
 	int lenNames = ftell(f);
 	char *names = new char[lenNames + _512KB];
@@ -1011,7 +831,9 @@ void NativeScriptRuntime::BuildMetadata(JEnv& env, jstring filesPath)
 	fclose(f);
 
 	f = fopen(valuesFile.c_str(), "rb");
-	assert(f != nullptr);
+	if(f == nullptr) {
+		throw NativeScriptException(string("metadata file (treeValueStream.dat) couldn't be opened!"));
+	}
 	fseek(f, 0, SEEK_END);
 	int lenValues = ftell(f);
 	char *values = new char[lenValues + _512KB];
@@ -1036,43 +858,35 @@ void NativeScriptRuntime::BuildMetadata(JEnv& env, jstring filesPath)
 	//delete[] values;
 }
 
-
-void NativeScriptRuntime::CreateTopLevelNamespaces(const Handle<Object>& global)
+void NativeScriptRuntime::CreateTopLevelNamespaces(const Local<Object>& global)
 {
 	MetadataNode::CreateTopLevelNamespaces(global);
 }
 
-Handle<Value> NativeScriptRuntime::CallJSMethod(JNIEnv *_env, const Handle<Object>& jsObject, const string& methodName, jobjectArray args, TryCatch& tc)
+Local<Value> NativeScriptRuntime::CallJSMethod(JNIEnv *_env, const Local<Object>& jsObject, const string& methodName, jobjectArray args)
 {
 	SET_PROFILER_FRAME();
 
 	JEnv env(_env);
-	Handle<Value> result;
+	Local<Value> result;
 
 	auto isolate = Isolate::GetCurrent();
 
-	auto exceptionUtil = ExceptionUtil::GetInstance();
-
 	//auto method = MetadataNode::GetPropertyFromImplementationObject(jsObject, jsMethodName);
 	auto method = jsObject->Get(ConvertToV8String(methodName));
+
 
 	if (method.IsEmpty() || method->IsUndefined())
 	{
 		stringstream ss;
 		ss << "Cannot find method '" << methodName << "' implementation";
-
-		ExceptionUtil::GetInstance()->ThrowExceptionToJs(ss.str());
-
-		result = Undefined(isolate);
+		throw NativeScriptException(ss.str());
 	}
 	else if (!method->IsFunction())
 	{
 		stringstream ss;
 		ss << "Property '" << methodName << "' is not a function";
-
-		ExceptionUtil::GetInstance()->ThrowExceptionToJs(ss.str());
-
-		result = Undefined(isolate);
+		throw NativeScriptException(ss.str());
 	}
 	else
 	{
@@ -1082,7 +896,7 @@ Handle<Value> NativeScriptRuntime::CallJSMethod(JNIEnv *_env, const Handle<Objec
 		auto jsArgs = ArgConverter::ConvertJavaArgsToJsArgs(args);
 		int argc = jsArgs->Length();
 
-		Handle<Value> arguments[argc];
+		Local<Value> arguments[argc];
 		for (int i = 0; i < argc; i++)
 		{
 			arguments[i] = jsArgs->Get(i);
@@ -1090,6 +904,7 @@ Handle<Value> NativeScriptRuntime::CallJSMethod(JNIEnv *_env, const Handle<Objec
 
 		DEBUG_WRITE("implementationObject->GetIdentityHash()=%d", jsObject->GetIdentityHash());
 
+		TryCatch tc;
 		Local<Value> jsResult;
 		{
 			SET_PROFILER_FRAME();
@@ -1098,9 +913,11 @@ Handle<Value> NativeScriptRuntime::CallJSMethod(JNIEnv *_env, const Handle<Objec
 
 		//TODO: if javaResult is a pure js object create a java object that represents this object in java land
 
-		if (tc.HasCaught())
-		{
-			jsResult = Undefined(isolate);
+		if(tc.HasCaught()) {
+			stringstream ss;
+			ss << "Calling js method " << methodName << " failed";
+			string exceptionMessage = ss.str();
+			throw NativeScriptException(tc, ss.str());
 		}
 
 		result = handleScope.Escape(jsResult);
@@ -1109,15 +926,12 @@ Handle<Value> NativeScriptRuntime::CallJSMethod(JNIEnv *_env, const Handle<Objec
 	return result;
 }
 
-Handle<Object> NativeScriptRuntime::FindClass(const string& className)
+Local<Object> NativeScriptRuntime::FindClass(const string& className)
 {
-	Handle<Object> clazz;
+	Local<Object> clazz;
 	JEnv env;
 
-	jmethodID mid = env.GetStaticMethodID(PlatformClass, "findClass", "(Ljava/lang/String;)Ljava/lang/Class;");
-	assert(mid != nullptr);
-	JniLocalRef name(env.NewStringUTF(className.c_str()));
-	jclass c = (jclass)env.CallStaticObjectMethod(PlatformClass, mid, (jstring)name);
+	jclass c = env.FindClass(className);
 	if (env.ExceptionCheck() == JNI_FALSE)
 	{
 		jint javaObjectID = objectManager->GetOrCreateObjectId(c);
@@ -1127,13 +941,11 @@ Handle<Object> NativeScriptRuntime::FindClass(const string& className)
 		{
 			clazz = objectManager->CreateJSWrapper(javaObjectID, "Ljava/lang/Class;", c);
 		}
-
-		env.DeleteLocalRef(c);
 	}
 	return clazz;
 }
 
-int NativeScriptRuntime::GetArrayLength(const Handle<Object>& arr)
+int NativeScriptRuntime::GetArrayLength(const Local<Object>& arr)
 {
 	JEnv env;
 
@@ -1147,22 +959,18 @@ int NativeScriptRuntime::GetArrayLength(const Handle<Object>& arr)
 
 JavaVM* NativeScriptRuntime::jvm = nullptr;
 jclass NativeScriptRuntime::PlatformClass = nullptr;
-jclass NativeScriptRuntime::RequireClass = nullptr;
 jclass NativeScriptRuntime::JAVA_LANG_STRING = nullptr;
 jmethodID NativeScriptRuntime::RESOLVE_CLASS_METHOD_ID = nullptr;
 jmethodID NativeScriptRuntime::CREATE_INSTANCE_METHOD_ID = nullptr;
 jmethodID NativeScriptRuntime::CACHE_CONSTRUCTOR_METHOD_ID = nullptr;
-jmethodID NativeScriptRuntime::APP_FAIL_METHOD_ID = nullptr;
-jmethodID NativeScriptRuntime::GET_MODULE_PATH_METHOD_ID = nullptr;
 jmethodID NativeScriptRuntime::GET_TYPE_METADATA = nullptr;
 jmethodID NativeScriptRuntime::ENABLE_VERBOSE_LOGGING_METHOD_ID = nullptr;
 jmethodID NativeScriptRuntime::DISABLE_VERBOSE_LOGGING_METHOD_ID = nullptr;
 jmethodID NativeScriptRuntime::GET_CHANGE_IN_BYTES_OF_USED_MEMORY_METHOD_ID = nullptr;
-map<string, Persistent<Object>*> NativeScriptRuntime::loadedModules;
 MetadataTreeNode* NativeScriptRuntime::metadataRoot = nullptr;
 ObjectManager* NativeScriptRuntime::objectManager = nullptr;
 NumericCasts NativeScriptRuntime::castFunctions;
 ArrayElementAccessor NativeScriptRuntime::arrayElementAccessor;
 FieldAccessor NativeScriptRuntime::fieldAccessor;
-string NativeScriptRuntime::APP_FILES_DIR;
 map<string, int> NativeScriptRuntime::s_constructorCache;
+map<std::string, jclass> NativeScriptRuntime::s_classCache;
